@@ -1,62 +1,46 @@
--- Bad example
-SELECT
-    (SELECT CONCAT(product_name, ": ", cnt)
-     FROM (SELECT product_name, COUNT(*) AS cnt
-           FROM (SELECT o.order_id, o.order_date, p.product_id, p.product_name
-                 FROM opt_orders o
-                 JOIN opt_products p ON o.product_id = p.product_id
-                 WHERE o.order_date > '2023-01-01') AS sub1
-           GROUP BY product_name) AS sub2
-     WHERE cnt = (SELECT MIN(cnt)
-                  FROM (SELECT COUNT(*) AS cnt
-                        FROM (SELECT o.order_id, o.order_date, p.product_id, p.product_name
-                              FROM opt_orders o
-                              JOIN opt_products p ON o.product_id = p.product_id
-                              WHERE o.order_date > '2023-01-01') AS sub3
-                        GROUP BY product_name) AS sub4)
-     LIMIT 1) AS min_cnt,
+-- Check if the indexes exist and create them if they do not
+SET @create_index_sql := (SELECT IF(
+    (SELECT COUNT(*)
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE table_schema = 'opt_db' AND table_name = 'opt_orders' AND index_name = 'idx_opt_orders_client_id') = 0,
+    'CREATE INDEX idx_opt_orders_client_id ON opt_orders(client_id)',
+    'SELECT 1'));
+PREPARE stmt FROM @create_index_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-    (SELECT CONCAT(product_name, ": ", cnt)
-     FROM (SELECT product_name, COUNT(*) AS cnt
-           FROM (SELECT o.order_id, o.order_date, p.product_id, p.product_name
-                 FROM opt_orders o
-                 JOIN opt_products p ON o.product_id = p.product_id
-                 WHERE o.order_date > '2023-01-01') AS sub1
-           GROUP BY product_name) AS sub2
-     WHERE cnt = (SELECT MAX(cnt)
-                  FROM (SELECT COUNT(*) AS cnt
-                        FROM (SELECT o.order_id, o.order_date, p.product_id, p.product_name
-                              FROM opt_orders o
-                              JOIN opt_products p ON o.product_id = p.product_id
-                              WHERE o.order_date > '2023-01-01') AS sub3
-                        GROUP BY product_name) AS sub4)
-     LIMIT 1) AS max_cnt;
+SET @create_index_sql := (SELECT IF(
+    (SELECT COUNT(*)
+     FROM INFORMATION_SCHEMA.STATISTICS
+     WHERE table_schema = 'opt_db' AND table_name = 'opt_orders' AND index_name = 'idx_opt_orders_product_id') = 0,
+    'CREATE INDEX idx_opt_orders_product_id ON opt_orders(product_id)',
+    'SELECT 1'));
+PREPARE stmt FROM @create_index_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
+-- Non-optimized query example with EXPLAIN
+EXPLAIN SELECT o.order_id, o.order_date, c.name AS client_name, p.product_name
+FROM opt_orders o
+JOIN opt_clients c ON o.client_id = c.id
+JOIN opt_products p ON o.product_id = p.product_id
+WHERE o.order_date > '2023-01-01';
 
--- Good example
-
-CREATE INDEX idx_opt_orders_order_date
-    ON opt_orders(order_date);
-
-with cte as (
-	select o.order_id, o.order_date, p.product_id, p.product_name
-	from opt_orders  as o
-	join opt_products  as p
-	on o.product_id = p.product_id
-	where o.order_date > '2023-01-01'
+-- Optimized query example using CTEs and indexes with EXPLAIN
+EXPLAIN WITH cte_orders AS (
+    SELECT order_id, order_date, client_id, product_id
+    FROM opt_orders
+    WHERE order_date > '2023-01-01'
+),
+cte_clients AS (
+    SELECT id, name
+    FROM opt_clients
+),
+cte_products AS (
+    SELECT product_id, product_name
+    FROM opt_products
 )
-,
-
-cnt_products as  (
-select product_name, count(*) as cnt
-from cte
-group by product_name
-)
-
-select
-
-(select concat(product_name, ": ", cnt) from cnt_products where cnt = (select min(cnt) as min_cnt from cnt_products) limit 1) as min_cnt,
-(select concat(product_name, ": ", cnt) from cnt_products where cnt = (select max(cnt) as max_cnt from cnt_products) limit 1) as max_cnt
-
-;
-
+SELECT o.order_id, o.order_date, c.name AS client_name, p.product_name
+FROM cte_orders o
+JOIN cte_clients c ON o.client_id = c.id
+JOIN cte_products p ON o.product_id = p.product_id;
